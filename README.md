@@ -10,6 +10,8 @@
 
 - Watchtime
 
+- Followage
+
 ## Guide to setup!
 
 - Get a twitch bot token

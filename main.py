@@ -4,6 +4,7 @@ import aiohttp
 import os
 import json
 from random import randint
+from datetime import datetime
 
 # Files
 TOKEN_FILE = "current_token.txt"
@@ -16,6 +17,10 @@ CLIENT_SECRET = "[REPLACE WITH CLIENT SECRET]"
 
 TOKEN = ""
 REFRESH_TOKEN = ""
+
+# URL Defenitions
+HELIX_URL = "https://api.twitch.tv/helix"
+
 
 # Token prompt
 def prompt_for_tokens():
@@ -57,6 +62,32 @@ async def refresh_access_token():
             else:
                 print("Token refresh failed.")
                 print(await response.text())
+
+async def get_user_id(username):
+    headers = {
+        "Client-ID": CLIENT_ID,
+        "Authorization": f"Bearer {TOKEN}"
+    }
+
+    # Fetch the user's ID
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"{HELIX_URL}/users",
+            headers=headers,
+            params={"login": username}
+        ) as user_response:
+            if user_response.status != 200:
+                print(f"Failed to fetch user information for {username}.")
+                return
+            user_data = await user_response.json()
+            if not user_data["data"]:
+                print(f"User {username} not found.")
+                return
+            user_id = user_data["data"][0]["id"]
+    return user_id
+
+
+
 
 # Load from JSON file
 def load_data(filename):
@@ -154,6 +185,52 @@ class TwitchBot(commands.Bot):
     async def watchtime_cmd(self, ctx):
         time = self.watchtime.get(ctx.author.name, 0)
         await ctx.send(f"@{ctx.author.name}, you’ve watched for {time} minutes.")
+    
+    @commands.command(name="folloawge")
+    async def followage(self, ctx):
+
+        
+        username = ctx.author.name
+
+        streamer = ctx.channel.name
+
+        user_id = get_user_id(username)
+
+        streamer_id = get_user_id(streamer)
+
+        headers = {
+        "Client-ID": CLIENT_ID,
+        "Authorization": f"Bearer {TOKEN}"
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            with session.get(f"{HELIX_URL}/users/follows",
+                            headers=headers,
+                            params={"from_id": user_id, "to_id": streamer_id}
+                            ) as followage_response:
+                            if followage_response.status != 400:
+                                print("Something went wrong.")
+                                await ctx.send(f"@{ctx.author.name} | Something went wrong in retrieveing followage")
+                                return
+                            data = followage_response.json()
+
+                            acutal_data = data.get("data", {})
+
+                            follow_date_str = acutal_data.get("followed_at", None)
+
+                            current_date = datetime.now()
+
+                            follow_date = datetime.strptime(follow_date_str, "%Y-%m-%dT%H:%M:%SZ")
+
+                            followage = current_date - follow_date
+                            days = followage.days
+                            seconds = followage.seconds
+                            hours = seconds // 3600
+                            minutes = (seconds % 3600) // 60
+
+                            await ctx.send(f"@{ctx.author.name} | You have been following {streamer} for {days} days, {hours} hours, {minutes} minutes")
+
+                            
 
 
 # Main
