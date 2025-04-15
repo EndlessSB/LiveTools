@@ -1,4 +1,4 @@
-from twitchio.ext import commands, tasks
+from twitchio.ext import commands
 import asyncio
 import aiohttp
 import os
@@ -12,17 +12,15 @@ POINTS_FILE = "points.txt"
 WATCHTIME_FILE = "watchtime.txt"
 
 # Twitch API credentials
-CLIENT_ID = "[REPLACE WITH CLIENT ID]"
-CLIENT_SECRET = "[REPLACE WITH CLIENT SECRET]"
+CLIENT_ID = "client_id"
+CLIENT_SECRET = "client_secrect"
 
 TOKEN = ""
 REFRESH_TOKEN = ""
 
-# URL Defenitions
 HELIX_URL = "https://api.twitch.tv/helix"
 
 
-# Token prompt
 def prompt_for_tokens():
     global TOKEN, REFRESH_TOKEN
     choice = input("Do you want to load tokens from file? (y/n): ").lower()
@@ -36,12 +34,10 @@ def prompt_for_tokens():
         REFRESH_TOKEN = input("Enter your refresh token: ").strip()
         save_tokens(TOKEN, REFRESH_TOKEN)
 
-# Save tokens to file
 def save_tokens(access_token, refresh_token):
     with open(TOKEN_FILE, "w") as file:
         file.write(f"{access_token}\n{refresh_token}\n")
 
-# Refresh token using refresh_token
 async def refresh_access_token():
     global TOKEN, REFRESH_TOKEN
     token_url = "https://id.twitch.tv/oauth2/token"
@@ -69,66 +65,52 @@ async def get_user_id(username):
         "Authorization": f"Bearer {TOKEN}"
     }
 
-    # Fetch the user's ID
     async with aiohttp.ClientSession() as session:
-        async with session.get(
-            f"{HELIX_URL}/users",
-            headers=headers,
-            params={"login": username}
-        ) as user_response:
-            if user_response.status != 200:
-                print(f"Failed to fetch user information for {username}.")
-                return
-            user_data = await user_response.json()
-            if not user_data["data"]:
-                print(f"User {username} not found.")
-                return
-            user_id = user_data["data"][0]["id"]
-    return user_id
+        async with session.get(f"{HELIX_URL}/users", headers=headers, params={"login": username}) as response:
+            if response.status != 200:
+                print(f"Failed to fetch user ID for {username}")
+                return None
+            data = await response.json()
+            if not data["data"]:
+                return None
+            return data["data"][0]["id"]
 
-
-
-
-# Load from JSON file
 def load_data(filename):
     if os.path.exists(filename):
         with open(filename, "r") as f:
             return json.load(f)
     return {}
 
-# Save to JSON file
 def save_data(filename, data):
     with open(filename, "w") as f:
         json.dump(data, f)
 
-# Twitch Bot Class
 class TwitchBot(commands.Bot):
 
     def __init__(self, channel):
         super().__init__(token=TOKEN, prefix='!', initial_channels=[channel])
         self.points = load_data(POINTS_FILE)
         self.watchtime = load_data(WATCHTIME_FILE)
-        self.token_refresher.start()
-        self.watchtime_tracker.start()
-
-    # Refresh token every hour
-    @tasks.loop(hours=1)
-    async def token_refresher(self):
-        await refresh_access_token()
-
-    # Add 1 minute watchtime every minute
-    @tasks.loop(minutes=1)
-    async def watchtime_tracker(self):
-        for user in self.watchtime:
-            self.watchtime[user] += 1
-            if self.watchtime[user] % 60 == 0:
-                self.points[user] = self.points.get(user, 0) + 500
-
-        save_data(WATCHTIME_FILE, self.watchtime)
-        save_data(POINTS_FILE, self.points)
 
     async def event_ready(self):
         print(f"Logged in as | {self.nick}")
+        self.loop.create_task(self.token_refresher())
+        self.loop.create_task(self.watchtime_tracker())
+
+    async def token_refresher(self):
+        while True:
+            await asyncio.sleep(3600)
+            await refresh_access_token()
+
+    async def watchtime_tracker(self):
+        while True:
+            await asyncio.sleep(60)
+            for user in self.watchtime:
+                self.watchtime[user] += 1
+                if self.watchtime[user] % 60 == 0:
+                    self.points[user] = self.points.get(user, 0) + 500
+            save_data(WATCHTIME_FILE, self.watchtime)
+            save_data(POINTS_FILE, self.points)
 
     async def event_message(self, message):
         if message.echo:
@@ -136,11 +118,10 @@ class TwitchBot(commands.Bot):
 
         user = message.author.name
 
-        # First-time setup
         if user not in self.watchtime:
             self.watchtime[user] = 0
         if user not in self.points:
-            self.points[user] = 1000  # Starting bonus
+            self.points[user] = 1000
 
         save_data(POINTS_FILE, self.points)
         save_data(WATCHTIME_FILE, self.watchtime)
@@ -185,55 +166,50 @@ class TwitchBot(commands.Bot):
     async def watchtime_cmd(self, ctx):
         time = self.watchtime.get(ctx.author.name, 0)
         await ctx.send(f"@{ctx.author.name}, you’ve watched for {time} minutes.")
-    
-    @commands.command(name="folloawge")
+
+    @commands.command(name="followage")
     async def followage(self, ctx):
-
-        
         username = ctx.author.name
-
         streamer = ctx.channel.name
 
-        user_id = get_user_id(username)
+        user_id = await get_user_id(username)
+        streamer_id = await get_user_id(streamer)
 
-        streamer_id = get_user_id(streamer)
+        if not user_id or not streamer_id:
+            await ctx.send(f"@{ctx.author.name} | Could not fetch user IDs.")
+            return
 
         headers = {
-        "Client-ID": CLIENT_ID,
-        "Authorization": f"Bearer {TOKEN}"
+            "Client-ID": CLIENT_ID,
+            "Authorization": f"Bearer {TOKEN}"
         }
-        
+
         async with aiohttp.ClientSession() as session:
-            with session.get(f"{HELIX_URL}/users/follows",
-                            headers=headers,
-                            params={"from_id": user_id, "to_id": streamer_id}
-                            ) as followage_response:
-                            if followage_response.status != 400:
-                                print("Something went wrong.")
-                                await ctx.send(f"@{ctx.author.name} | Something went wrong in retrieveing followage")
-                                return
-                            data = followage_response.json()
+            async with session.get(f"{HELIX_URL}/users/follows",
+                                   headers=headers,
+                                   params={"from_id": user_id, "to_id": streamer_id}) as response:
 
-                            acutal_data = data.get("data", {})
+                if response.status != 200:
+                    await ctx.send(f"@{ctx.author.name} | Failed to retrieve follow info.")
+                    return
 
-                            follow_date_str = acutal_data.get("followed_at", None)
+                data = await response.json()
+                follow_data = data.get("data")
 
-                            current_date = datetime.now()
+                if not follow_data:
+                    await ctx.send(f"@{ctx.author.name} | You are not following {streamer}.")
+                    return
 
-                            follow_date = datetime.strptime(follow_date_str, "%Y-%m-%dT%H:%M:%SZ")
+                follow_date_str = follow_data[0].get("followed_at")
+                follow_date = datetime.strptime(follow_date_str, "%Y-%m-%dT%H:%M:%SZ")
+                now = datetime.utcnow()
+                diff = now - follow_date
+                days, seconds = diff.days, diff.seconds
+                hours = seconds // 3600
+                minutes = (seconds % 3600) // 60
 
-                            followage = current_date - follow_date
-                            days = followage.days
-                            seconds = followage.seconds
-                            hours = seconds // 3600
-                            minutes = (seconds % 3600) // 60
+                await ctx.send(f"@{ctx.author.name} | You've been following {streamer} for {days} days, {hours} hours, and {minutes} minutes.")
 
-                            await ctx.send(f"@{ctx.author.name} | You have been following {streamer} for {days} days, {hours} hours, {minutes} minutes")
-
-                            
-
-
-# Main
 if __name__ == "__main__":
     prompt_for_tokens()
     channel = input("Enter the Twitch channel to join: ").strip()
